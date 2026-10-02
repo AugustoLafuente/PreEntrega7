@@ -5,6 +5,7 @@
 import mongoose from 'mongoose';
 import eventsRepository from '../repositories/events.repository.js';
 import { EVENT_STATUSES } from '../models/Event.js';
+import AppError from '../utils/AppError.js';
 
 const REQUIRED_CREATE_FIELDS = ['title', 'description', 'category', 'location'];
 const UPDATABLE_FIELDS = ['title', 'description', 'category', 'date', 'location', 'capacity', 'price', 'sport_type'];
@@ -13,13 +14,6 @@ const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 10;
 // Un evento cancelado es un estado terminal: no se puede editar ni transicionar a otro estado.
 const TERMINAL_STATUSES = ['cancelled'];
-
-class ServiceError extends Error {
-    constructor(message, statusCode) {
-        super(message);
-        this.statusCode = statusCode;
-    }
-}
 
 const toEventDTO = (event) => ({
     id: event._id,
@@ -38,24 +32,24 @@ const toEventDTO = (event) => ({
 const parseDate = (value, fieldErrorMessage) => {
     const parsed = new Date(value);
     if (Number.isNaN(parsed.getTime())) {
-        throw new ServiceError(fieldErrorMessage, 400);
+        throw new AppError(fieldErrorMessage, 400);
     }
     return parsed;
 };
 
 const getOwnedEventOrThrow = async (eventId, user) => {
     if (!mongoose.isValidObjectId(eventId)) {
-        throw new ServiceError('Evento no encontrado', 404);
+        throw new AppError('Evento no encontrado', 404);
     }
 
     const event = await eventsRepository.getEventById(eventId);
     if (!event) {
-        throw new ServiceError('Evento no encontrado', 404);
+        throw new AppError('Evento no encontrado', 404);
     }
 
     const isOwner = event.organizer.toString() === user.id;
     if (!isOwner && user.role !== 'admin') {
-        throw new ServiceError('No tenés permisos para modificar este evento', 403);
+        throw new AppError('No tenés permisos para modificar este evento', 403);
     }
 
     return event;
@@ -102,12 +96,12 @@ export const listEvents = async (query = {}) => {
 
 export const getEventById = async (eventId) => {
     if (!mongoose.isValidObjectId(eventId)) {
-        throw new ServiceError('Evento no encontrado', 404);
+        throw new AppError('Evento no encontrado', 404);
     }
 
     const event = await eventsRepository.getEventById(eventId);
     if (!event) {
-        throw new ServiceError('Evento no encontrado', 404);
+        throw new AppError('Evento no encontrado', 404);
     }
 
     return toEventDTO(event);
@@ -116,26 +110,26 @@ export const getEventById = async (eventId) => {
 export const createEvent = async (eventData, organizerId) => {
     for (const field of REQUIRED_CREATE_FIELDS) {
         if (!eventData[field]) {
-            throw new ServiceError(`Falta el campo obligatorio: ${field}`, 400);
+            throw new AppError(`Falta el campo obligatorio: ${field}`, 400);
         }
     }
 
     if (!eventData.date) {
-        throw new ServiceError('Falta el campo obligatorio: date', 400);
+        throw new AppError('Falta el campo obligatorio: date', 400);
     }
     const eventDate = parseDate(eventData.date, 'La fecha del evento es inválida');
     if (eventDate.getTime() < Date.now()) {
-        throw new ServiceError('No se puede crear un evento con fecha pasada', 400);
+        throw new AppError('No se puede crear un evento con fecha pasada', 400);
     }
 
     const capacity = Number(eventData.capacity);
     if (!Number.isFinite(capacity) || capacity <= 0) {
-        throw new ServiceError('La capacidad debe ser mayor a 0', 400);
+        throw new AppError('La capacidad debe ser mayor a 0', 400);
     }
 
     const price = eventData.price === undefined ? 0 : Number(eventData.price);
     if (!Number.isFinite(price) || price < 0) {
-        throw new ServiceError('El precio no puede ser negativo', 400);
+        throw new AppError('El precio no puede ser negativo', 400);
     }
 
     const newEvent = await eventsRepository.createEvent({
@@ -158,7 +152,7 @@ export const updateEvent = async (eventId, updates, user) => {
     const event = await getOwnedEventOrThrow(eventId, user);
 
     if (TERMINAL_STATUSES.includes(event.status)) {
-        throw new ServiceError('No se puede modificar un evento cancelado', 400);
+        throw new AppError('No se puede modificar un evento cancelado', 400);
     }
 
     const sanitizedUpdates = {};
@@ -170,12 +164,15 @@ export const updateEvent = async (eventId, updates, user) => {
 
     if (sanitizedUpdates.date !== undefined) {
         sanitizedUpdates.date = parseDate(sanitizedUpdates.date, 'La fecha del evento es inválida');
+        if (sanitizedUpdates.date.getTime() < Date.now()) {
+            throw new AppError('No se puede actualizar el evento a una fecha pasada', 400);
+        }
     }
 
     if (sanitizedUpdates.capacity !== undefined) {
         const capacity = Number(sanitizedUpdates.capacity);
         if (!Number.isFinite(capacity) || capacity <= 0) {
-            throw new ServiceError('La capacidad debe ser mayor a 0', 400);
+            throw new AppError('La capacidad debe ser mayor a 0', 400);
         }
         sanitizedUpdates.capacity = capacity;
     }
@@ -183,7 +180,7 @@ export const updateEvent = async (eventId, updates, user) => {
     if (sanitizedUpdates.price !== undefined) {
         const price = Number(sanitizedUpdates.price);
         if (!Number.isFinite(price) || price < 0) {
-            throw new ServiceError('El precio no puede ser negativo', 400);
+            throw new AppError('El precio no puede ser negativo', 400);
         }
         sanitizedUpdates.price = price;
     }
@@ -194,17 +191,17 @@ export const updateEvent = async (eventId, updates, user) => {
 
 export const updateEventStatus = async (eventId, newStatus, user) => {
     if (!EVENT_STATUSES.includes(newStatus)) {
-        throw new ServiceError('Estado inválido', 400);
+        throw new AppError('Estado inválido', 400);
     }
 
     const event = await getOwnedEventOrThrow(eventId, user);
 
     if (TERMINAL_STATUSES.includes(event.status)) {
-        throw new ServiceError('No se puede modificar el estado de un evento cancelado', 400);
+        throw new AppError('No se puede modificar el estado de un evento cancelado', 400);
     }
 
     if (newStatus === 'published' && event.status === 'finished') {
-        throw new ServiceError('No se puede publicar un evento ya finalizado', 400);
+        throw new AppError('No se puede publicar un evento ya finalizado', 400);
     }
 
     const updatedEvent = await eventsRepository.updateEvent(eventId, { status: newStatus });

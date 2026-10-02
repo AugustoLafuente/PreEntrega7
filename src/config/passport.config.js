@@ -9,16 +9,10 @@ import { Strategy as JwtStrategy } from 'passport-jwt';
 import usersRepository from '../repositories/users.repository.js';
 import { hashPassword, comparePassword } from '../utils/hash.js';
 import { config, COOKIE_NAME } from './config.js';
+import AppError from '../utils/AppError.js';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MIN_PASSWORD_LENGTH = 8;
-
-class StrategyError extends Error {
-    constructor(message, statusCode) {
-        super(message);
-        this.statusCode = statusCode;
-    }
-}
 
 const toSafeUser = (user) => ({
     id: user._id,
@@ -41,18 +35,18 @@ const initializePassport = () => {
                     const { first_name, last_name } = req.body;
 
                     if (!first_name || !last_name || !email || !password) {
-                        return done(new StrategyError('Faltan campos obligatorios', 400));
+                        return done(new AppError('Faltan campos obligatorios', 400));
                     }
 
                     const normalizedEmail = String(email).trim().toLowerCase();
 
                     if (!EMAIL_REGEX.test(normalizedEmail)) {
-                        return done(new StrategyError('El formato del email es inválido', 400));
+                        return done(new AppError('El formato del email es inválido', 400));
                     }
 
                     if (String(password).length < MIN_PASSWORD_LENGTH) {
                         return done(
-                            new StrategyError(
+                            new AppError(
                                 `La contraseña debe tener al menos ${MIN_PASSWORD_LENGTH} caracteres`,
                                 400
                             )
@@ -61,7 +55,7 @@ const initializePassport = () => {
 
                     const existingUser = await usersRepository.getUserByEmail(normalizedEmail);
                     if (existingUser) {
-                        return done(new StrategyError('El email ya está registrado', 409));
+                        return done(new AppError('El email ya está registrado', 409));
                     }
 
                     const hashedPassword = await hashPassword(password);
@@ -130,14 +124,14 @@ const initializePassport = () => {
     );
 };
 
-// Middlewares de ruta: envuelven passport.authenticate con una respuesta JSON
-// consistente, manteniendo las rutas limpias y delegando toda la lógica
-// de autenticación en las estrategias de arriba.
+// Middlewares de ruta: envuelven passport.authenticate y reenvían cualquier
+// error al middleware global (src/middlewares/errorHandler.middleware.js),
+// manteniendo las rutas limpias y la lógica de autenticación en las
+// estrategias de arriba.
 export const authenticateRegister = (req, res, next) => {
     passport.authenticate('register', { session: false }, (err, user) => {
         if (err) {
-            const statusCode = err.statusCode || 500;
-            return res.status(statusCode).json({ status: 'error', message: err.message });
+            return next(err);
         }
         req.user = user;
         return next();
@@ -147,10 +141,10 @@ export const authenticateRegister = (req, res, next) => {
 export const authenticateLogin = (req, res, next) => {
     passport.authenticate('login', { session: false }, (err, user) => {
         if (err) {
-            return res.status(500).json({ status: 'error', message: err.message });
+            return next(err);
         }
         if (!user) {
-            return res.status(401).json({ status: 'error', message: 'Credenciales inválidas' });
+            return next(new AppError('Credenciales inválidas', 401));
         }
         req.user = user;
         return next();
